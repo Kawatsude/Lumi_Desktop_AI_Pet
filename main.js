@@ -344,6 +344,13 @@ const directionalLight = new THREE.DirectionalLight(0xffffff, 1.5);
 directionalLight.position.set(1.0, 1.0, 1.0).normalize();
 scene.add(directionalLight);
 
+let targetMouseX = 0;
+let targetMouseY = 0;
+window.addEventListener('mousemove', (e) => {
+  targetMouseX = (e.clientX / window.innerWidth - 0.5) * 2;
+  targetMouseY = -(e.clientY / window.innerHeight - 0.5) * 2;
+});
+
 const clock = new THREE.Clock();
 
 const loader = new GLTFLoader();
@@ -381,14 +388,20 @@ loader.load(
     const rightLowerLeg = vrm.humanoid.getNormalizedBoneNode("rightLowerLeg");
     if (rightLowerLeg) rightLowerLeg.rotation.set(0.1, 0, 0); // Dizi hafif kır
 
-    // Parmaklar (hafif kıvrık)
-    const fingers = ['Index', 'Middle', 'Ring', 'Little'];
+    // Parmaklar (hafif kıvrık - Bıçak gibi durmaması için daha belirgin bük)
+    const fingers = ['Thumb', 'Index', 'Middle', 'Ring', 'Little'];
     ['left', 'right'].forEach(side => {
       fingers.forEach(finger => {
         const p1 = vrm.humanoid.getNormalizedBoneNode(`${side}${finger}Proximal`);
         const p2 = vrm.humanoid.getNormalizedBoneNode(`${side}${finger}Intermediate`);
-        if (p1) p1.rotation.z = side === 'left' ? -0.1 : 0.1;
-        if (p2) p2.rotation.z = side === 'left' ? -0.1 : 0.1;
+        const p3 = vrm.humanoid.getNormalizedBoneNode(`${side}${finger}Distal`);
+        
+        let bend = side === 'left' ? -0.35 : 0.35; // ~20 derece bük
+        if (finger === 'Thumb') bend *= 0.5; // Baş parmak daha az bükülür
+        
+        if (p1) p1.rotation.z = bend;
+        if (p2) p2.rotation.z = bend;
+        if (p3) p3.rotation.z = bend;
       });
     });
 
@@ -418,6 +431,7 @@ function animate() {
   requestAnimationFrame(animate);
 
   const delta = clock.getDelta();
+    
   if (currentVrm) {
     const time = Date.now() / 1000;
     const spine = currentVrm.humanoid.getNormalizedBoneNode("spine");
@@ -427,13 +441,19 @@ function animate() {
     const hips = currentVrm.humanoid.getNormalizedBoneNode("hips");
     
     // Daha organik ve yumuşak salınımlar (Canlı hissiyat)
-    const breath = Math.sin(time * 2.0); // Nefes ritmi
-    const sway = Math.sin(time * 0.5);   // Yavaş salınım
+    const breath = Math.sin(time * 2.0); // Nefes hızı normale döndü
+    const sway = Math.sin(time * 0.5);
     
     if (hips) {
-      hips.position.y = breath * 0.005; // Nefesle göğüs kafesi yerine hafif tüm vücut esnemesi
-      hips.position.x = sway * 0.01;    // Hafif sağa sola ağırlık aktarımı
+      hips.position.y = 0; // Süzülme (uçma) iptal edildi
+      hips.position.x = sway * 0.01;
+      hips.rotation.z = sway * 0.02;
     }
+
+    const rightHand = currentVrm.humanoid.getNormalizedBoneNode("rightHand");
+    const leftHand = currentVrm.humanoid.getNormalizedBoneNode("leftHand");
+    if (rightHand) rightHand.rotation.set(-0.1, 0, -0.2); 
+    if (leftHand) leftHand.rotation.set(-0.1, 0, 0.2);
     
     if (spine) {
       spine.rotation.x = breath * 0.01;
@@ -495,9 +515,16 @@ function animate() {
       t_luZ = -1.25;
       t_llZ = 0;
     } else {
-      // Susarken: Kollar rahatça yanda aşağı sarkıyor (A-Pose'a yakın)
-      t_ruX = 0; t_ruY = 0; t_ruZ = 1.25 + Math.sin(time * 2.0) * 0.02; t_rlZ = 0;
-      t_luX = 0; t_luY = 0; t_luZ = -1.25 - Math.sin(time * 2.0) * 0.02; t_llZ = 0;
+      // Susarken: "Standby 3" benzeri havalı duruş
+      t_ruX = -0.1; // Hafif öne
+      t_ruY = -0.1; // Hafif içe dönük
+      t_ruZ = 1.15 + Math.sin(time * 2.0) * 0.02; // Yanlarda sallanıyor
+      t_rlZ = 0.3 + Math.sin(time * 1.5) * 0.05; // Dirsek hafif bükülü ve canlı
+      
+      t_luX = 0; 
+      t_luY = 0.5; // Kolu dışa çevir
+      t_luZ = -0.6; // Yana aç
+      t_llZ = -1.6; // Dirseği büküp bele koy
     }
 
     // Hedeflere yumuşak geçiş (Lerp)
@@ -550,7 +577,30 @@ function animate() {
         }
     }
 
+    if (typeof window.windX === 'undefined') { window.windX = 0; window.windZ = 0; window.lastCameraPos = new THREE.Vector3(); }
+    if (window.lastCameraPos.length() === 0) window.lastCameraPos.copy(camera.position);
+    const camDX = camera.position.x - window.lastCameraPos.x;
+    const camDZ = camera.position.z - window.lastCameraPos.z;
+    window.windX = window.windX * 0.85 + camDX * 10.0;
+    window.windZ = window.windZ * 0.85 + camDZ * 10.0;
+    window.windX = Math.max(-1.0, Math.min(1.0, window.windX));
+    window.windZ = Math.max(-1.0, Math.min(1.0, window.windZ));
+
+    const joints = (currentVrm.springBoneManager && currentVrm.springBoneManager.joints) || (currentVrm.springBoneManager && currentVrm.springBoneManager.springs) || [];
+    joints.forEach(joint => {
+        const target = joint.settings || joint;
+        if (!target.origGravityDir) {
+            target.origGravityDir = target.gravityDir ? target.gravityDir.clone() : new THREE.Vector3(0, -1, 0);
+            target.origGravityPower = target.gravityPower !== undefined ? target.gravityPower : 1.0;
+        }
+        const windForce = new THREE.Vector3(window.windX, 0, window.windZ);
+        const newGrav = target.origGravityDir.clone().multiplyScalar(target.origGravityPower).add(windForce);
+        if(target.gravityDir && target.gravityDir.copy) target.gravityDir.copy(newGrav).normalize();
+        target.gravityPower = newGrav.length();
+    });
+    currentVrm.scene.updateMatrixWorld(true);
     currentVrm.update(delta);
+    window.lastCameraPos.copy(camera.position);
   }
 
   controls.update();
@@ -564,3 +614,13 @@ window.addEventListener("resize", () => {
   camera.updateProjectionMatrix();
   renderer.setSize(window.innerWidth, window.innerHeight);
 });
+
+
+
+
+
+
+
+
+
+
